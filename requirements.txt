@@ -1,0 +1,5 @@
+torch
+numpy
+pillow
+matplotlib
+scikit-image   # optional: only used by make_demo_data.py
