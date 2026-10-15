@@ -17,7 +17,7 @@ from stadiff.config import make_cfg
 from stadiff.data import ImgDS, make_splits
 from stadiff.diffusion import build_t_map, make_ab, net_input, q_sample
 from stadiff.evaluation import evaluate, print_summary
-from stadiff.masks import random_masks
+from stadiff.masks import random_masks, box_mask, gaussian_blur
 from stadiff.model import EMA, UNet
 from stadiff.utils import get_device, set_seed
 from stadiff.visualize import save_grid
@@ -103,7 +103,8 @@ def main():
             B, _, H, W = x0.shape
 
             # --- one StaDiff training step -------------------------------------------------
-            m = random_masks(B, H, W, dev)                       # random ROI, any position / size / shape
+            # m = random_masks(B, H, W, dev)                       # random ROI, any position / size / shape
+            m = box_mask((0.25, 0.25, 0.75, 0.75), H, W, dev)  # optional: user-defined ROI (centered box)
             u = torch.rand(B, 1, 1, 1, device=dev)               # 20% uniform-noise samples keep Phase 2 strong
             m = torch.where(u < 0.1, torch.zeros_like(m), torch.where(u < 0.2, torch.ones_like(m), m))
             s = torch.randint(1, a.t_roi + 1, (B,), device=dev)  # global step ~ U[1, t_roi]
