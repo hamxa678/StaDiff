@@ -1,11 +1,11 @@
-"""Dataset: a folder of images -> deterministic train / val / test splits -> PyTorch Dataset."""
+"""Dataset: a folder of (clean) images -> deterministic train / val / test splits -> PyTorch Dataset."""
 import glob
 import os
 import random
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image
 from torch.utils.data import Dataset
 
 from .config import IMG_EXTS
@@ -32,41 +32,45 @@ def make_splits(data_dir, val_frac, test_frac, seed):
 
 
 class ImgDS(Dataset):
-    """Lazy loader. Train: random crop + flip. Val/test/infer: deterministic center crop. Output in [-1, 1]."""
+    """
+    Loads the FULL image (no random crop / flip: the ROI rectangle is fixed in image coordinates),
+    converts to grayscale (channels=1) or RGB (channels=3), resizes to (H, W), optionally normalises exposure
+    with CLAHE, and returns a (C, H, W) tensor in [-1, 1].
+    """
 
-    def __init__(self, files, size, train):
-        self.files, self.size, self.train = files, size, train
+    def __init__(self, files, cfg):
+        self.files, self.H, self.W = files, cfg["H"], cfg["W"]
+        self.C, self.norm = cfg["channels"], cfg["norm"]
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, i):
+        mode = "L" if self.C == 1 else "RGB"
         try:
             img = Image.open(self.files[i])
             try:
-                img.draft("RGB", (self.size * 2, self.size * 2))   # fast JPEG downscale
+                img.draft(mode, (self.W * 2, self.H * 2))          # fast JPEG downscale
             except Exception:
                 pass
-            img = img.convert("RGB")
+            img = img.convert(mode)
         except Exception as e:
             print(f"[warn] cannot read {self.files[i]}: {e}")
             return self[(i + 1) % len(self)]
-        w, h = img.size
-        side = min(w, h)
-        if self.train:
-            side = int(side * random.uniform(0.6, 1.0))
-            left, top = random.randint(0, w - side), random.randint(0, h - side)
-        else:
-            left, top = (w - side) // 2, (h - side) // 2
-        img = img.crop((left, top, left + side, top + side)).resize((self.size, self.size), Image.LANCZOS)
-        if self.train and random.random() < 0.5:
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        arr = np.asarray(img, dtype=np.float32) / 127.5 - 1.0
-        return torch.from_numpy(arr).permute(2, 0, 1)
+        a = np.asarray(img.resize((self.W, self.H), Image.LANCZOS), np.float32) / 255.0
+        if self.norm == "clahe":                                    # per-image exposure normalisation
+            from skimage import exposure
+            if a.ndim == 2:
+                a = exposure.equalize_adapthist(a, clip_limit=0.02)
+            else:
+                a = np.stack([exposure.equalize_adapthist(a[..., c], clip_limit=0.02) for c in range(a.shape[-1])], -1)
+        a = a.astype(np.float32) * 2 - 1
+        a = a[None] if a.ndim == 2 else a.transpose(2, 0, 1)
+        return torch.from_numpy(np.ascontiguousarray(a))
 
 
 def write_demo_images(out_dir, n):
-    """Write a small toy image folder (random crops of a few sample photos) to try the pipeline."""
+    """Write a small toy image folder (4:3 crops of a few sample photos). Only for smoke-testing the pipeline."""
     os.makedirs(out_dir, exist_ok=True)
     bases = []
     try:
@@ -78,24 +82,16 @@ def write_demo_images(out_dir, n):
                 pass
     except ImportError:
         pass
-    if not bases:                                       # synthetic fallback
+    if not bases:
         for _ in range(6):
-            s = 256
-            y, x = np.mgrid[0:s, 0:s] / s
-            c1, c2 = np.random.rand(3), np.random.rand(3)
-            im = Image.fromarray((np.clip(x[..., None] * c1 + y[..., None] * c2, 0, 1) * 255).astype(np.uint8))
-            d = ImageDraw.Draw(im)
-            for _ in range(10):
-                rr, cx, cy = random.randint(10, 50), random.randint(0, s), random.randint(0, s)
-                d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=tuple(random.randint(0, 255) for _ in range(3)))
-            bases.append(im)
+            arr = (np.random.rand(240, 320, 3) * 255).astype(np.uint8)
+            bases.append(Image.fromarray(arr))
     for i in range(n):
         img = random.choice(bases)
         w, h = img.size
-        side = int(min(w, h) * random.uniform(0.4, 1.0))
-        left, top = random.randint(0, w - side), random.randint(0, h - side)
-        img = img.crop((left, top, left + side, top + side)).resize((128, 128), Image.LANCZOS)
-        if random.random() < 0.5:
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        img.save(os.path.join(out_dir, f"img_{i:04d}.jpg"), quality=95)
+        cw = int(min(w, h * 4 / 3) * random.uniform(0.5, 1.0))
+        ch = int(cw * 3 / 4)
+        left, top = random.randint(0, w - cw), random.randint(0, h - ch)
+        img.crop((left, top, left + cw, top + ch)).resize((320, 240), Image.LANCZOS).save(
+            os.path.join(out_dir, f"img_{i:04d}.jpg"), quality=95)
     print(f"wrote {n} images to {out_dir}  (toy data: crops of {len(bases)} base images)")

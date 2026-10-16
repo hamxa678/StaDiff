@@ -1,4 +1,4 @@
-"""ROI masks: random (training / evaluation) and user-given boxes (inference)."""
+"""ROI masks. The project currently uses ONE fixed rectangle (fixed_mask). random_masks is kept for later."""
 import math
 
 import torch
@@ -18,7 +18,7 @@ def gaussian_blur(m, sigma):
 
 
 def random_masks(B, H, W, device, gen=None):
-    """Random soft rectangles / ellipses anywhere in the image. Pass `gen` for reproducible masks."""
+    """(NOT USED at the moment) random soft rectangles / ellipses anywhere in the image."""
     r = lambda *shape: torch.rand(*shape, generator=gen).to(device)
     ys = torch.linspace(0, 1, H, device=device).view(1, H, 1)
     xs = torch.linspace(0, 1, W, device=device).view(1, 1, W)
@@ -31,9 +31,14 @@ def random_masks(B, H, W, device, gen=None):
     return gaussian_blur(m, sigma)
 
 
-def box_mask(box, H, W, device):
+def box_mask(box, H, W, device, blur=None):
     """Rectangle from fractional coords (x0, y0, x1, y1) -> soft mask (1,1,H,W)."""
     x0, y0, x1, y1 = box
     m = torch.zeros(1, 1, H, W, device=device)
     m[..., int(y0 * H):int(y1 * H), int(x0 * W):int(x1 * W)] = 1.0
-    return gaussian_blur(m, H / 32)
+    return gaussian_blur(m, H / 32 if blur is None else blur)
+
+
+def fixed_mask(cfg, device):
+    """The hard-coded ROI rectangle (cfg['roi_box'], fractions of the image), softened at the border. (1,1,H,W)."""
+    return box_mask(cfg["roi_box"], cfg["H"], cfg["W"], device)
