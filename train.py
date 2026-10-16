@@ -11,6 +11,8 @@ import argparse
 import json
 import math
 import os
+import sys
+import time
 from pathlib import Path
 
 import torch
@@ -48,11 +50,11 @@ def parse_args():
     p.add_argument("--warmup", type=int, default=500)
     p.add_argument("--ema", type=float, default=0.999)
     p.add_argument("--amp", action="store_true", help="bf16 autocast (CUDA only)")
-    p.add_argument("--workers", type=int, default=2)
+    p.add_argument("--workers", type=int, default=0, help="DataLoader workers (0 is fastest: data is in memory)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val_frac", type=float, default=0.1)
     p.add_argument("--test_frac", type=float, default=0.1)
-    p.add_argument("--log_every", type=int, default=100)
+    p.add_argument("--log_every", type=int, default=20)
     p.add_argument("--val_every", type=int, default=1000)
     p.add_argument("--val_batches", type=int, default=8)
     p.add_argument("--val_sampling_steps", type=int, default=25)
@@ -79,13 +81,17 @@ def build_loaders(a, cfg, out):
         split_file.write_text(json.dumps(splits, indent=1))
     print(f"images  train {len(splits['train'])} | val {len(splits['val'])} | test {len(splits['test'])}")
     bs = min(a.batch, len(splits["train"]))
-    train_dl = DataLoader(ImgDS(splits["train"], cfg), batch_size=bs, shuffle=True, drop_last=True,
+    train_dl = DataLoader(ImgDS(splits["train"], cfg, out / "cache_train.npz", "train"), batch_size=bs, shuffle=True, drop_last=True,
                           num_workers=a.workers, persistent_workers=a.workers > 0)
-    val_dl = DataLoader(ImgDS(splits["val"], cfg), batch_size=min(bs, len(splits["val"])), shuffle=False)
+    val_dl = DataLoader(ImgDS(splits["val"], cfg, out / "cache_val.npz", "val"), batch_size=min(bs, len(splits["val"])), shuffle=False)
     return train_dl, val_dl
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     a = parse_args()
     dev = get_device()
     set_seed(a.seed)
@@ -116,6 +122,8 @@ def main():
     print(f"ROI rectangle covers {(m1 > 0.5).float().mean().item() * 100:.0f}% of the image")
 
     log = open(out / "val_log.jsonl", "a")
+    print("starting training (progress is printed every --log_every steps)...", flush=True)
+    start_step, t0 = step, time.time()
     done = step >= a.steps
     while not done:
         for x0 in train_dl:
@@ -138,12 +146,13 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step(); sched.step(); ema.update(model, step)
 
-            if step % a.log_every == 0:
-                print(f"step {step:7d}/{a.steps}  loss {loss.item():.4f}  lr {sched.get_last_lr()[0]:.2e}")
+            if step % a.log_every == 0 or step == start_step + 1:
+                speed = (step - start_step) / (time.time() - t0)
+                print(f"step {step:7d}/{a.steps}  loss {loss.item():.4f}  lr {sched.get_last_lr()[0]:.2e}  {speed:.1f} it/s")
             if step % a.val_every == 0 or step >= a.steps:
+                print(f"  [val @ step {step}] running validation...", flush=True)
                 sm, _, ex = evaluate(ema.m, val_dl, cfg, ab, dev, a.val_sampling_steps,
                                      max_batches=a.val_batches, n_examples=4)
-                print(f"  [val @ step {step}] (EMA weights)")
                 print_summary(sm)
                 log.write(json.dumps({"step": step, **sm}) + "\n"); log.flush()
                 save_grid(ex, out / "samples" / f"step_{step:07d}.png")

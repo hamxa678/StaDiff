@@ -35,7 +35,7 @@ def main():
     files = json.loads(split_path.read_text())["test"]
     out = Path(a.out) if a.out else Path(a.ckpt).parent / "test"
     out.mkdir(parents=True, exist_ok=True)
-    dl = DataLoader(ImgDS(files, cfg), batch_size=min(a.batch, len(files)), shuffle=False)
+    dl = DataLoader(ImgDS(files, cfg, Path(a.ckpt).parent / "cache_test.npz", "test"), batch_size=min(a.batch, len(files)), shuffle=False)
     print(f"testing {a.ckpt} (trained {ck['step']} steps) on {len(files)} held-out images, cfg={cfg}")
 
     sm, rows, ex = evaluate(model, dl, cfg, make_ab(dev), dev, a.sample_steps, seed=a.seed,

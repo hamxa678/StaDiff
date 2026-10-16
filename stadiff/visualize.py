@@ -145,3 +145,38 @@ def save_gif(snaps, x_start, m, cfg, path, size=320, ms=250):
         frames.append(canvas)
     frames += [frames[-1]] * 4
     frames[0].save(path, save_all=True, append_images=frames[1:], duration=ms, loop=0)
+
+
+# ---------------------------------------------------------------------------
+# Anomaly-testing figures
+# ---------------------------------------------------------------------------
+def save_anomaly_examples(rows, mask, path, vmax):
+    """
+    rows: list of dicts {x0 (C,H,W), rec (C,H,W), amap (1,H,W), title, gt (H,W) bool or None}, values in [-1,1].
+    Columns: original (red outline = ground-truth defect, if given) | reconstruction | anomaly map (green = ROI).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n = len(rows)
+    H, W = rows[0]["x0"].shape[-2:]
+    cw = 4.0
+    fig, axes = plt.subplots(n, 3, figsize=(cw * 3, (cw * H / W + 0.45) * n), squeeze=False)
+    mk = mask[0, 0].cpu().numpy()
+    for i, r in enumerate(rows):
+        _imshow(axes[i, 0], r["x0"])
+        if r.get("gt") is not None and r["gt"].any():
+            axes[i, 0].contour(r["gt"].numpy().astype(float), levels=[0.5], colors="red", linewidths=1.2)
+        _imshow(axes[i, 1], r["rec"])
+        axes[i, 2].imshow(r["amap"][0].float().numpy(), cmap="inferno", vmin=0, vmax=vmax)
+        axes[i, 2].contour(mk, levels=[0.5], colors="lime", linewidths=1)
+        axes[i, 0].set_title(r["title"], fontsize=10, loc="left")
+        axes[i, 1].set_title("StaDiff reconstruction", fontsize=10)
+        axes[i, 2].set_title("anomaly map |input - recon|", fontsize=10)
+        for j in range(3):
+            axes[i, j].axis("off")
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    plt.savefig(path, dpi=110)
+    plt.close(fig)

@@ -1,7 +1,10 @@
-"""Dataset: a folder of (clean) images -> deterministic train / val / test splits -> PyTorch Dataset."""
+"""Dataset: a folder of (clean) images -> deterministic train / val / test splits -> in-memory PyTorch Dataset."""
 import glob
+import json
 import os
 import random
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -31,42 +34,74 @@ def make_splits(data_dir, val_frac, test_frac, seed):
     return {"test": files[:n_test], "val": files[n_test:n_test + n_val], "train": files[n_test + n_val:]}
 
 
-class ImgDS(Dataset):
-    """
-    Loads the FULL image (no random crop / flip: the ROI rectangle is fixed in image coordinates),
-    converts to grayscale (channels=1) or RGB (channels=3), resizes to (H, W), optionally normalises exposure
-    with CLAHE, and returns a (C, H, W) tensor in [-1, 1].
-    """
-
-    def __init__(self, files, cfg):
-        self.files, self.H, self.W = files, cfg["H"], cfg["W"]
-        self.C, self.norm = cfg["channels"], cfg["norm"]
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, i):
-        mode = "L" if self.C == 1 else "RGB"
+def _load_one(path, cfg):
+    """One image -> uint8 array (C,H,W): grayscale/RGB, resized to (H,W), optional CLAHE. None if unreadable."""
+    H, W, C = cfg["H"], cfg["W"], cfg["channels"]
+    mode = "L" if C == 1 else "RGB"
+    try:
+        img = Image.open(path)
         try:
-            img = Image.open(self.files[i])
-            try:
-                img.draft(mode, (self.W * 2, self.H * 2))          # fast JPEG downscale
-            except Exception:
-                pass
-            img = img.convert(mode)
-        except Exception as e:
-            print(f"[warn] cannot read {self.files[i]}: {e}")
-            return self[(i + 1) % len(self)]
-        a = np.asarray(img.resize((self.W, self.H), Image.LANCZOS), np.float32) / 255.0
-        if self.norm == "clahe":                                    # per-image exposure normalisation
+            img.draft(mode, (W * 2, H * 2))                       # fast JPEG downscale
+        except Exception:
+            pass
+        a = np.asarray(img.convert(mode).resize((W, H), Image.LANCZOS), np.float32) / 255.0
+        if cfg["norm"] == "clahe":                                # per-image exposure normalisation
             from skimage import exposure
             if a.ndim == 2:
                 a = exposure.equalize_adapthist(a, clip_limit=0.02)
             else:
-                a = np.stack([exposure.equalize_adapthist(a[..., c], clip_limit=0.02) for c in range(a.shape[-1])], -1)
-        a = a.astype(np.float32) * 2 - 1
-        a = a[None] if a.ndim == 2 else a.transpose(2, 0, 1)
-        return torch.from_numpy(np.ascontiguousarray(a))
+                a = np.stack([exposure.equalize_adapthist(a[..., c], clip_limit=0.02) for c in range(C)], -1)
+        a = (np.clip(a, 0, 1) * 255).round().astype(np.uint8)
+        return a[None] if a.ndim == 2 else a.transpose(2, 0, 1)
+    except Exception as e:
+        print(f"[warn] cannot read {path}: {e}", flush=True)
+        return None
+
+
+def load_tensors(files, cfg, cache_file=None, workers=8, tag="images"):
+    """
+    Read + preprocess ALL images once (threaded, with progress) and keep them in memory as uint8.
+    With cache_file the result is stored on local disk, so slow storage (e.g. Google Drive) is only read once.
+    """
+    key = json.dumps({"files": list(files), "H": cfg["H"], "W": cfg["W"], "C": cfg["channels"], "norm": cfg["norm"]})
+    if cache_file and os.path.exists(cache_file):
+        try:
+            z = np.load(cache_file, allow_pickle=False)
+            if str(z["key"]) == key:
+                print(f"[data] {tag}: {len(files)} images loaded from cache {cache_file}", flush=True)
+                return z["data"], list(files)
+        except Exception:
+            pass
+    print(f"[data] {tag}: reading {len(files)} images (first time only; cached afterwards)...", flush=True)
+    t0, out = time.time(), [None] * len(files)
+    with ThreadPoolExecutor(workers) as ex:
+        for i, arr in enumerate(ex.map(lambda f: _load_one(f, cfg), files)):
+            out[i] = arr
+            if (i + 1) % 50 == 0 or i + 1 == len(files):
+                print(f"[data] {tag}: {i + 1}/{len(files)}  ({time.time() - t0:.0f}s)", flush=True)
+    ok = [i for i, a in enumerate(out) if a is not None]
+    if not ok:
+        raise SystemExit(f"None of the {tag} images could be read.")
+    data, kept = np.stack([out[i] for i in ok]), [files[i] for i in ok]
+    if cache_file and len(ok) == len(files):
+        np.savez(cache_file, data=data, key=key)
+    return data, kept
+
+
+class ImgDS(Dataset):
+    """
+    In-memory dataset. Loads the FULL image (no random crop / flip: the ROI rectangle is fixed in image
+    coordinates). Returns a (C, H, W) float tensor in [-1, 1].
+    """
+
+    def __init__(self, files, cfg, cache_file=None, tag="images"):
+        self.data, self.files = load_tensors(files, cfg, cache_file, tag=tag)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        return torch.from_numpy(self.data[i]).float() / 127.5 - 1.0
 
 
 def write_demo_images(out_dir, n):
