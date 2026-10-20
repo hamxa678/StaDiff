@@ -7,6 +7,7 @@ import torch
 from .diffusion import build_t_map, net_input, q_sample
 from .masks import fixed_mask
 from .metrics import region_psnr, ssim, to01
+from .noise import sample_noise
 from .sampler import staged_sample
 
 
@@ -36,7 +37,7 @@ def evaluate(model, loader, cfg, ab, dev, n_steps=50, seed=0, max_batches=None, 
             for name, (lo, hi) in buckets.items():
                 s = torch.randint(lo, hi + 1, (B,), device=dev)
                 t_map = build_t_map(s, m, t_roi, t_bg)
-                x_t, eps = q_sample(x0, t_map, ab)
+                x_t, eps = q_sample(x0, t_map, ab, sample_noise(x0, m, cfg))
                 err = ((model(net_input(x_t, m, t_map, t_roi), s) - eps) ** 2).mean(1, keepdim=True)
                 acc[f"{name}_roi"] += (err * m).sum().item()
                 acc[f"{name}_roi_n"] += m.sum().item()

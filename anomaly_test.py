@@ -62,11 +62,7 @@ def main():
     split_path = Path(a.ckpt).parent / "splits.json"
     splits = json.loads(split_path.read_text()) if split_path.exists() else None
 
-    anom_files = sorted(
-        str(p)
-        for p in Path(a.anomaly_dir).rglob("*")
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"}
-    )
+    anom_files = list_images(a.anomaly_dir)
     if a.normal_dir:
         normal_files = list_images(a.normal_dir)
     elif splits:

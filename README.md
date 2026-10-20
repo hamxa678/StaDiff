@@ -45,6 +45,35 @@ python anomaly_test.py --ckpt runs/exp2/best.pt --anomaly_dir "path/to/anomalous
 - Defects outside the ROI rectangle cannot be detected (`--region all` scores the whole image instead).
 - Choose the score variant (`max`/`topk`/`mean`) and `--thr_pct` on validation data, not on the test results.
 
+## Noise types: Gaussian vs simplex vs colored (noise.py, noise_demo.py)
+
+Gaussian noise has equal power at every spatial scale, so it destroys fine detail first and LARGE structures (a missing
+weld, a bent rod) survive until very high noise levels. Simplex noise (AnoDDPM) has most of its power at coarse scales
+and erases large structures at a much lower noise level. `colored` is a fast, exactly-Gaussian alternative (1/f^beta spectrum).
+
+```bash
+python noise_demo.py --images a.jpg b.jpg c.jpg          # per-scale SNR table for each noise type on YOUR images
+
+# simplex inside the ROI, Gaussian in the background (the background keeps its layout as clean context)
+python train.py --data_dir ... --out runs/exp4 --noise_roi simplex --noise_bg gaussian
+# simplex everywhere (as in AnoDDPM)
+python train.py --data_dir ... --out runs/exp5 --noise_roi simplex --noise_bg simplex
+```
+Tuning: `--simplex_wavelength` (coarsest octave in px, bigger = coarser), `--simplex_octaves`, `--simplex_persistence`,
+`--color_beta`. The settings are stored in the checkpoint, so test/infer/anomaly_test use the same noise automatically.
+The default is Gaussian everywhere (unchanged behaviour). Building the simplex bank takes a few seconds at start.
+
+## Why is the ROI reconstructed worse than the background? (diagnose_gap.py)
+
+```bash
+python diagnose_gap.py --ckpt runs/exp2/best.pt
+```
+
+Runs the held-out clean images three ways and prints the PSNR of ROI vs background:
+A = normal staged run, B = whole image noised only to `t_bg` (uniform), C = mean of K staged samples.
+It splits the ROI gap into: extra noise in the ROI (information destroyed), content difficulty (gap at identical noise),
+and sampling randomness.
+
 ## What changed compared with the random-mask version
 
 - Images are loaded from your folder as grayscale (`--channels 3` for RGB), resized to `--H x --W` (default 192x256,
@@ -64,6 +93,8 @@ stadiff_project/
 ├── anomaly_test.py       # score CLEAN vs ANOMALOUS images: image/pixel AUROC, threshold, examples
 ├── infer.py              # run on one image
 ├── show_phases.py        # figures/GIF that illustrate Phase 1 vs Phase 2
+├── diagnose_gap.py       # why is the ROI reconstructed worse than the background? (3 measured causes)
+├── noise_demo.py         # what does Gaussian vs simplex vs colored noise erase in YOUR images?
 ├── make_demo_data.py     # toy dataset, only for smoke-testing the code
 ├── requirements.txt
 └── stadiff/
@@ -71,6 +102,7 @@ stadiff_project/
     ├── data.py           # folder -> train/val/test splits, grayscale/rectangular Dataset
     ├── masks.py          # fixed ROI rectangle (fixed_mask) + unused random masks
     ├── diffusion.py      # noise schedule, per-pixel timestep map, forward noising
+    ├── noise.py          # Gaussian / simplex / colored noise, separate type for ROI and background
     ├── model.py          # mask/timestep-map conditioned U-Net + EMA
     ├── sampler.py        # staged two-phase reverse process (per-pixel DDIM)
     ├── metrics.py        # PSNR (per region) and SSIM

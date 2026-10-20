@@ -2,22 +2,25 @@
 import torch
 
 from .diffusion import build_t_map, net_input, q_sample
+from .noise import sample_noise
 
 
 @torch.no_grad()
-def staged_sample(model, x_orig, m, ab, cfg, n_steps=50, return_traj=False):
+def staged_sample(model, x_orig, m, ab, cfg, n_steps=50, return_traj=False, s_start=None):
     """
     Corrupt x_orig (ROI -> t_roi, background -> t_bg), then reverse in two phases using the same
     per-pixel timestep map. While s > t_bg the background has t_cur == t_nxt, so it is left untouched
     (Phase 1); once s <= t_bg every pixel is denoised together (Phase 2).
+    s_start: global step to start from (default t_roi). s_start=t_bg gives a uniform start (Phase 2 only), used by diagnose_gap.py.
     Returns (reconstruction, corrupted_start)  [+ trajectory list of (s, x) if return_traj=True].
     """
     t_roi, t_bg = cfg["t_roi"], cfg["t_bg"]
     B, dev = x_orig.shape[0], x_orig.device
     full = lambda v: torch.full((B,), int(v), device=dev, dtype=torch.long)
-    grid = torch.linspace(t_roi, 0, n_steps + 1).round().long().tolist()
+    s0 = t_roi if s_start is None else int(s_start)
+    grid = torch.linspace(s0, 0, n_steps + 1).round().long().tolist()
 
-    x_start, _ = q_sample(x_orig, build_t_map(full(t_roi), m, t_roi, t_bg), ab)
+    x_start, _ = q_sample(x_orig, build_t_map(full(s0), m, t_roi, t_bg), ab, sample_noise(x_orig, m, cfg))
     x = x_start.clone()
     traj = [(grid[0], x.clone())] if return_traj else None
     for s_cur, s_nxt in zip(grid[:-1], grid[1:]):

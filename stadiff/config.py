@@ -7,8 +7,12 @@ IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 # Meant to cover all three welds and part of the rods. Check/tune it with:  python preview_roi.py --data_dir ...
 DEFAULT_ROI_BOX = (0.15, 0.18, 0.87, 0.94)
 
+NOISE_KINDS = ("gaussian", "simplex", "colored")
+DEFAULT_NOISE = {"roi": "gaussian", "bg": "gaussian", "wavelength": 64.0, "octaves": 5,
+                 "persistence": 0.7, "beta": 1.0}      # see stadiff/noise.py
 
-def make_cfg(H, W, channels, base, t_roi, t_bg, roi_box, norm):
+
+def make_cfg(H, W, channels, base, t_roi, t_bg, roi_box, norm, noise=None):
     """Configuration that is stored inside every checkpoint (so test/infer need no extra flags)."""
     assert 0 < t_bg < t_roi <= T_SCHED, "need 0 < t_bg < t_roi <= 1000"
     assert H % 4 == 0 and W % 4 == 0, "H and W must be divisible by 4"
@@ -16,5 +20,7 @@ def make_cfg(H, W, channels, base, t_roi, t_bg, roi_box, norm):
     x0, y0, x1, y1 = roi_box
     assert 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1, "roi_box must be fractions with x0<x1, y0<y1"
     assert norm in ("clahe", "none")
+    noise = {**DEFAULT_NOISE, **(noise or {})}
+    assert noise["roi"] in NOISE_KINDS and noise["bg"] in NOISE_KINDS, f"noise kinds must be in {NOISE_KINDS}"
     return {"H": H, "W": W, "channels": channels, "base": base, "t_roi": t_roi, "t_bg": t_bg,
-            "roi_box": [float(v) for v in roi_box], "norm": norm}
+            "roi_box": [float(v) for v in roi_box], "norm": norm, "noise": noise}

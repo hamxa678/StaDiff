@@ -25,6 +25,7 @@ from stadiff.diffusion import build_t_map, make_ab, net_input, q_sample
 from stadiff.evaluation import evaluate, print_summary
 from stadiff.masks import fixed_mask
 from stadiff.model import EMA
+from stadiff.noise import sample_noise
 from stadiff.utils import build_model, get_device, set_seed
 from stadiff.visualize import save_grid
 
@@ -43,6 +44,12 @@ def parse_args():
     p.add_argument("--base", type=int, default=64, help="U-Net base channels")
     p.add_argument("--t_roi", type=int, default=500, help="max noise level inside the ROI")
     p.add_argument("--t_bg", type=int, default=300, help="max noise level in the background")
+    p.add_argument("--noise_roi", default="gaussian", choices=["gaussian", "simplex", "colored"], help="noise type inside the ROI")
+    p.add_argument("--noise_bg", default="gaussian", choices=["gaussian", "simplex", "colored"], help="noise type in the background")
+    p.add_argument("--simplex_wavelength", type=float, default=64.0, help="coarsest simplex octave, in pixels (bigger = coarser)")
+    p.add_argument("--simplex_octaves", type=int, default=5)
+    p.add_argument("--simplex_persistence", type=float, default=0.7, help="amplitude kept per finer octave")
+    p.add_argument("--color_beta", type=float, default=1.0, help="1/f^beta spectrum of the colored noise (bigger = coarser)")
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--steps", type=int, default=20000)
     p.add_argument("--lr", type=float, default=2e-4)
@@ -97,7 +104,9 @@ def main():
     set_seed(a.seed)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    cfg = make_cfg(a.H, a.W, a.channels, a.base, a.t_roi, a.t_bg, a.roi_box, a.norm)
+    cfg = make_cfg(a.H, a.W, a.channels, a.base, a.t_roi, a.t_bg, a.roi_box, a.norm,
+                   noise={"roi": a.noise_roi, "bg": a.noise_bg, "wavelength": a.simplex_wavelength,
+                          "octaves": a.simplex_octaves, "persistence": a.simplex_persistence, "beta": a.color_beta})
 
     train_dl, val_dl = build_loaders(a, cfg, out)
     m1 = fixed_mask(cfg, dev)                                    # the one hard-coded ROI mask (1,1,H,W)
@@ -135,7 +144,7 @@ def main():
             m = m1.expand(B, -1, -1, -1)
             s = torch.randint(1, a.t_roi + 1, (B,), device=dev)  # global step ~ U[1, t_roi]
             t_map = build_t_map(s, m, a.t_roi, a.t_bg)           # ROI: s,  background: min(s, t_bg)
-            x_t, eps = q_sample(x0, t_map, ab)                   # per-pixel forward noising
+            x_t, eps = q_sample(x0, t_map, ab, sample_noise(x0, m, cfg))   # per-pixel forward noising
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 pred = model(net_input(x_t, m, t_map, a.t_roi), s)
             loss = F.mse_loss(pred.float(), eps)                 # predict the noise at every pixel
